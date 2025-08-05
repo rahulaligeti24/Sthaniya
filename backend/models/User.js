@@ -1,11 +1,11 @@
+// models/User.js
 const mongoose = require('mongoose');
 
 const userSchema = new mongoose.Schema({
   name: {
     type: String,
     required: true,
-    trim: true,
-    maxlength: 100
+    trim: true
   },
   email: {
     type: String,
@@ -16,12 +16,15 @@ const userSchema = new mongoose.Schema({
   },
   password: {
     type: String,
-    minlength: 6
+    // Not required for Google users
+    required: function() {
+      return this.authProvider === 'local';
+    }
   },
   role: {
     type: String,
-    enum: ['user', 'contributor'],
-    default: null
+    enum: ['user'],
+    default: 'user'
   },
   authProvider: {
     type: String,
@@ -30,13 +33,35 @@ const userSchema = new mongoose.Schema({
   },
   googleId: {
     type: String,
-    unique: true,
-    sparse: true
+    sparse: true // Allows multiple null values
   },
   profilePicture: {
     type: String,
+    default: ''
+  },
+  emailVerified: {
+    type: Boolean,
+    default: false
+  },
+  // Additional fields for email verification
+  verificationToken: {
+    type: String,
     default: null
   },
+  verificationTokenExpires: {
+    type: Date,
+    default: null
+  },
+  // Password reset fields (for future use)
+  resetPasswordToken: {
+    type: String,
+    default: null
+  },
+  resetPasswordExpires: {
+    type: Date,
+    default: null
+  },
+  // Account status
   isActive: {
     type: Boolean,
     default: true
@@ -46,26 +71,29 @@ const userSchema = new mongoose.Schema({
     default: null
   }
 }, {
-  timestamps: true
+  timestamps: true // Adds createdAt and updatedAt automatically
 });
 
 // Index for better query performance
 userSchema.index({ email: 1 });
 userSchema.index({ googleId: 1 });
+userSchema.index({ verificationToken: 1 });
+userSchema.index({ resetPasswordToken: 1 });
 
-// Virtual for user ID
-userSchema.virtual('id').get(function() {
-  return this._id.toHexString();
+// Virtual for full name (if you want to split first/last name later)
+userSchema.virtual('displayName').get(function() {
+  return this.name;
 });
 
-userSchema.set('toJSON', {
-  virtuals: true,
-  transform: function(doc, ret) {
-    delete ret._id;
-    delete ret.__v;
-    delete ret.password;
-    return ret;
-  }
-});
+// Method to check if account is verified
+userSchema.methods.isVerified = function() {
+  return this.emailVerified || this.authProvider === 'google';
+};
+
+// Method to update last login
+userSchema.methods.updateLastLogin = function() {
+  this.lastLogin = new Date();
+  return this.save();
+};
 
 module.exports = mongoose.model('User', userSchema);

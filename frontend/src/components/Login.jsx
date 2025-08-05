@@ -1,18 +1,23 @@
-import React, { useState, useEffect } from 'react';
-import './css/Login.css'
+import React, { useState, useEffect, useContext } from 'react';
+import './css/Login.css';
+import { useNavigate, Link } from 'react-router-dom';
+import { UserContext } from '../contexts/UserContext';
 
 const GOOGLE_CLIENT_ID = '947940324164-otntqkg63sr421g1qqr25pel3rso4ec9.apps.googleusercontent.com';
 
-const Login = ({ onLogin, onSwitchToRegister }) => {
+const Login = () => {
+  const { handleUserLogin } = useContext(UserContext);
+  const navigate = useNavigate();
+
   const [formData, setFormData] = useState({
     email: '',
     password: ''
   });
+
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
 
   useEffect(() => {
-    // Load Google Sign-In API
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
@@ -68,7 +73,8 @@ const Login = ({ onLogin, onSwitchToRegister }) => {
       if (res.ok) {
         localStorage.setItem('token', data.token);
         localStorage.setItem('userData', JSON.stringify(data.user));
-        onLogin(data.user);
+        handleUserLogin(data.user);
+        navigate('/dashboard');
       } else {
         setError(data.message || 'Google login failed');
       }
@@ -98,7 +104,8 @@ const Login = ({ onLogin, onSwitchToRegister }) => {
       if (response.ok) {
         localStorage.setItem('token', data.token);
         localStorage.setItem('userData', JSON.stringify(data.user));
-        onLogin(data.user);
+        handleUserLogin(data.user);
+        navigate('/dashboard');
       } else {
         setError(data.message || 'Login failed');
       }
@@ -160,14 +167,10 @@ const Login = ({ onLogin, onSwitchToRegister }) => {
         <div id="google-signin-btn" className="google-btn-container"></div>
 
         <p className="auth-switch">
-          Don't have an account?{' '}
-          <button 
-            type="button" 
-            className="link-btn" 
-            onClick={onSwitchToRegister}
-          >
+          Don&apos;t have an account?{' '}
+          <Link to="/register" className="link-btn">
             Sign up
-          </button>
+          </Link>
         </p>
       </div>
     </div>

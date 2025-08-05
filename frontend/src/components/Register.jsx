@@ -1,20 +1,30 @@
- import React, { useState, useEffect } from 'react';
-import './css/Regsiter.css'
+import React, { useState, useEffect, useContext } from 'react';
+import './css/Regsiter.css';
+import { useNavigate, Link } from 'react-router-dom';
+import { UserContext } from '../contexts/UserContext';
 
 const GOOGLE_CLIENT_ID = '947940324164-otntqkg63sr421g1qqr25pel3rso4ec9.apps.googleusercontent.com';
 
-const Register = ({ onRegister, onSwitchToLogin }) => {
+const Register = () => {
+  const { handleUserLogin } = useContext(UserContext);
+  const navigate = useNavigate();
+
   const [formData, setFormData] = useState({
     name: '',
     email: '',
     password: '',
     confirmPassword: ''
   });
+
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
+  const [showVerification, setShowVerification] = useState(false);
+  const [verificationCode, setVerificationCode] = useState('');
+  const [resendLoading, setResendLoading] = useState(false);
+  const [resendTimer, setResendTimer] = useState(0);
+  const [successMessage, setSuccessMessage] = useState('');
 
   useEffect(() => {
-    // Load Google Sign-In API
     const script = document.createElement('script');
     script.src = 'https://accounts.google.com/gsi/client';
     script.async = true;
@@ -29,15 +39,12 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
         cancel_on_tap_outside: false
       });
 
-      // Use One Tap to show user info
       window.google.accounts.id.prompt((notification) => {
         if (notification.isNotDisplayed() || notification.isSkippedMoment()) {
-          // Fallback to regular button
           renderGoogleButton();
         }
       });
 
-      // Also render the button for manual click
       renderGoogleButton();
     };
 
@@ -48,19 +55,28 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
     };
   }, []);
 
+  useEffect(() => {
+    let interval = null;
+    if (resendTimer > 0) {
+      interval = setInterval(() => {
+        setResendTimer(timer => timer - 1);
+      }, 1000);
+    } else if (resendTimer === 0 && interval) {
+      clearInterval(interval);
+    }
+    return () => clearInterval(interval);
+  }, [resendTimer]);
+
   const renderGoogleButton = () => {
     const buttonContainer = document.getElementById('google-register-btn');
-    if (buttonContainer) {
-      window.google.accounts.id.renderButton(
-        buttonContainer,
-        {
-          theme: 'outline',
-          size: 'large',
-          width: '100%',
-          type: 'standard',
-          text: 'signup_with'
-        }
-      );
+    if (buttonContainer && !showVerification) {
+      window.google.accounts.id.renderButton(buttonContainer, {
+        theme: 'outline',
+        size: 'large',
+        width: '100%',
+        type: 'standard',
+        text: 'signup_with'
+      });
     }
   };
 
@@ -69,6 +85,12 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
       ...formData,
       [e.target.name]: e.target.value
     });
+    setError('');
+    setSuccessMessage('');
+  };
+
+  const handleVerificationCodeChange = (e) => {
+    setVerificationCode(e.target.value);
     setError('');
   };
 
@@ -90,7 +112,8 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
       if (res.ok) {
         localStorage.setItem('token', data.token);
         localStorage.setItem('userData', JSON.stringify(data.user));
-        onRegister(data.user);
+        handleUserLogin(data.user);
+        navigate('/dashboard');
       } else {
         setError(data.message || 'Google registration failed');
       }
@@ -113,10 +136,56 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
     return true;
   };
 
+  const sendVerificationCode = async (email) => {
+    const response = await fetch('http://localhost:5000/api/auth/send-verification', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ email }),
+    });
+
+    const data = await response.json();
+
+    if (!response.ok) {
+      throw new Error(data.message || 'Failed to send verification code');
+    }
+
+    return data;
+  };
+
   const handleSubmit = async (e) => {
     e.preventDefault();
-    
     if (!validateForm()) return;
+
+    setLoading(true);
+    setError('');
+    setSuccessMessage('');
+
+    try {
+      await sendVerificationCode(formData.email);
+      setShowVerification(true);
+      setResendTimer(60);
+      setSuccessMessage('Verification code sent to your email!');
+    } catch (error) {
+      setError(error.message || 'Failed to send verification code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleVerificationSubmit = async (e) => {
+    e.preventDefault();
+
+    if (!verificationCode.trim()) {
+      setError('Please enter the verification code');
+      return;
+    }
+
+    if (verificationCode.length !== 6) {
+      setError('Verification code must be 6 digits');
+      return;
+    }
 
     setLoading(true);
     setError('');
@@ -130,7 +199,8 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
         body: JSON.stringify({
           name: formData.name,
           email: formData.email,
-          password: formData.password
+          password: formData.password,
+          verificationCode: verificationCode
         }),
       });
 
@@ -139,7 +209,8 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
       if (response.ok) {
         localStorage.setItem('token', data.token);
         localStorage.setItem('userData', JSON.stringify(data.user));
-        onRegister(data.user);
+        handleUserLogin(data.user);
+        navigate('/dashboard');
       } else {
         setError(data.message || 'Registration failed');
       }
@@ -150,6 +221,94 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
     }
   };
 
+  const handleResendCode = async () => {
+    if (resendTimer > 0) return;
+
+    setResendLoading(true);
+    setError('');
+
+    try {
+      await sendVerificationCode(formData.email);
+      setResendTimer(60);
+      setSuccessMessage('Verification code resent successfully!');
+    } catch (error) {
+      setError(error.message || 'Failed to resend verification code');
+    } finally {
+      setResendLoading(false);
+    }
+  };
+
+  const handleBackToForm = () => {
+    setShowVerification(false);
+    setVerificationCode('');
+    setError('');
+    setSuccessMessage('');
+    setResendTimer(0);
+  };
+
+  // Render Verification UI
+  if (showVerification) {
+    return (
+      <div className="auth-container">
+        <div className="auth-card">
+          <h2>Verify Your Email</h2>
+          <p className="auth-subtitle">
+            We've sent a verification code to <strong>{formData.email}</strong>
+          </p>
+
+          {error && <div className="error-message">{error}</div>}
+          {successMessage && <div className="success-message">{successMessage}</div>}
+
+          <form onSubmit={handleVerificationSubmit} className="auth-form">
+            <div className="form-group">
+              <label htmlFor="verificationCode">Verification Code</label>
+              <input
+                type="text"
+                id="verificationCode"
+                name="verificationCode"
+                value={verificationCode}
+                onChange={handleVerificationCodeChange}
+                placeholder="Enter 6-digit code"
+                maxLength="6"
+                required
+                disabled={loading}
+                style={{ textAlign: 'center', fontSize: '18px', letterSpacing: '2px' }}
+              />
+            </div>
+
+            <button type="submit" className="auth-btn primary" disabled={loading}>
+              {loading ? 'Verifying...' : 'Verify & Create Account'}
+            </button>
+          </form>
+
+          <div className="verification-actions" style={{ marginTop: '20px', textAlign: 'center' }}>
+            <p>Didn't receive the code?</p>
+            <button
+              type="button"
+              className="link-btn"
+              onClick={handleResendCode}
+              disabled={resendLoading || resendTimer > 0}
+              style={{ marginRight: '10px', opacity: (resendLoading || resendTimer > 0) ? 0.6 : 1 }}
+            >
+              {resendLoading ? 'Sending...' : resendTimer > 0 ? `Resend in ${resendTimer}s` : 'Resend Code'}
+            </button>
+
+            <span style={{ margin: '0 10px' }}>|</span>
+
+            <button type="button" className="link-btn" onClick={handleBackToForm}>
+              Change Email
+            </button>
+          </div>
+
+          <p className="auth-switch">
+            Already have an account? <Link to="/login" className="link-btn">Sign in</Link>
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  // Render Registration UI
   return (
     <div className="auth-container">
       <div className="auth-card">
@@ -157,8 +316,8 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
         <p className="auth-subtitle">Create your account</p>
 
         {error && <div className="error-message">{error}</div>}
+        {successMessage && <div className="success-message">{successMessage}</div>}
 
-        {/* Google Sign Up Button - Show first */}
         <div id="google-register-btn" className="google-btn-container" style={{ marginBottom: '20px' }}></div>
 
         <div className="auth-divider">
@@ -219,24 +378,13 @@ const Register = ({ onRegister, onSwitchToLogin }) => {
             />
           </div>
 
-          <button 
-            type="submit" 
-            className="auth-btn primary"
-            disabled={loading}
-          >
-            {loading ? 'Creating Account...' : 'Create Account'}
+          <button type="submit" className="auth-btn primary" disabled={loading}>
+            {loading ? 'Sending Verification...' : 'Send Verification Code'}
           </button>
         </form>
 
         <p className="auth-switch">
-          Already have an account?{' '}
-          <button 
-            type="button" 
-            className="link-btn" 
-            onClick={onSwitchToLogin}
-          >
-            Sign in
-          </button>
+          Already have an account? <Link to="/login" className="link-btn">Sign in</Link>
         </p>
       </div>
     </div>

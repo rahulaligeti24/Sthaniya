@@ -2,11 +2,16 @@ const express = require('express');
 const cors = require('cors');
 const jwt = require('jsonwebtoken');
 const bcrypt = require('bcryptjs');
+const nodemailer = require('nodemailer');
 const { OAuth2Client } = require('google-auth-library');
 const mongoose = require('mongoose');
-const User = require('./models/User')
+const User = require('./models/User');
+const StoryRoutes = require('./routes/stories'); 
+const crypto = require('crypto');
 require('dotenv').config();
 
+
+const verificationCodes = new Map();
 const app = express();
 const PORT = process.env.PORT || 5000;
 const JWT_SECRET = process.env.JWT_SECRET || 'sthaniya-secret-key-2024';
@@ -17,6 +22,8 @@ const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 // Middleware
 app.use(cors());
 app.use(express.json());
+
+app.use('/api/stories', StoryRoutes);
 
 // Request validation middleware to catch malformed URLs
 app.use((req, res, next) => {
@@ -67,23 +74,136 @@ app.get('/api/health', (req, res) => {
   res.json({ message: 'Sthaniya API is running!' });
 });
 
-// Normal Registration
+ 
+// Email transporter setup (uncomment and configure your existing code)
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS
+  }
+});
+
+// Helper function to send verification code
+const sendVerificationCode = async (email, code) => {
+  try {
+    const mailOptions = {
+      from: process.env.EMAIL_USER,
+      to: email,
+      subject: "Sthaniya - Email Verification Code",
+      html: `
+        <div style="font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;">
+          <h2 style="color: #333;">Welcome to Sthaniya!</h2>
+          <p>Thank you for signing up. Please use the verification code below to complete your registration:</p>
+          <div style="background-color: #f4f4f4; padding: 20px; text-align: center; margin: 20px 0;">
+            <h1 style="color: #007bff; font-size: 32px; letter-spacing: 5px; margin: 0;">${code}</h1>
+          </div>
+          <p>This code will expire in 10 minutes.</p>
+          <p>If you didn't request this verification, please ignore this email.</p>
+          <hr style="margin-top: 30px;">
+          <p style="color: #666; font-size: 12px;">This is an automated message from Sthaniya. Please do not reply.</p>
+        </div>
+      `
+    };
+    
+    await transporter.sendMail(mailOptions);
+    return { status: "success", message: "Verification code sent" };
+  } catch (err) {
+    console.error("Send verification code error:", err);
+    throw new Error("Failed to send verification code");
+  }
+};
+
+// Generate random 6-digit code
+const generateVerificationCode = () => {
+  return crypto.randomInt(100000, 999999).toString();
+};
+
+// Add these routes after your existing auth routes
+
+// Send verification code route
+app.post('/api/auth/send-verification', async (req, res) => {
+  try {
+    const { email } = req.body;
+
+    if (!email) {
+      return res.status(400).json({ message: 'Email is required' });
+    }
+
+    // Check if user already exists
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    // Generate verification code
+    const code = generateVerificationCode();
+    
+    // Store code with expiration (10 minutes)
+    verificationCodes.set(email, {
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+      attempts: 0
+    });
+
+    // Send email
+    await sendVerificationCode(email, code);
+
+    res.json({
+      message: 'Verification code sent successfully',
+      email
+    });
+
+  } catch (error) {
+    console.error('Send verification error:', error);
+    res.status(500).json({ message: error.message || 'Failed to send verification code' });
+  }
+});
+
+// Modified register route to include verification
 app.post('/api/auth/register', async (req, res) => {
   try {
-    const { name, email, password } = req.body;
+    const { name, email, password, verificationCode } = req.body;
 
     // Validation
     if (!name || !email || !password) {
       return res.status(400).json({ message: 'All fields are required' });
     }
 
+    if (!verificationCode) {
+      return res.status(400).json({ message: 'Verification code is required' });
+    }
+
     if (password.length < 6) {
       return res.status(400).json({ message: 'Password must be at least 6 characters long' });
     }
 
-    // Check if user already exists
+    // Check verification code
+    const storedVerification = verificationCodes.get(email);
+    
+    if (!storedVerification) {
+      return res.status(400).json({ message: 'Verification code not found. Please request a new one.' });
+    }
+
+    if (Date.now() > storedVerification.expiresAt) {
+      verificationCodes.delete(email);
+      return res.status(400).json({ message: 'Verification code has expired. Please request a new one.' });
+    }
+
+    if (storedVerification.attempts >= 3) {
+      verificationCodes.delete(email);
+      return res.status(400).json({ message: 'Too many verification attempts. Please request a new code.' });
+    }
+
+    if (storedVerification.code !== verificationCode) {
+      storedVerification.attempts += 1;
+      return res.status(400).json({ message: 'Invalid verification code' });
+    }
+
+    // Check if user already exists (double check)
     const existingUser = await User.findOne({ email });
     if (existingUser) {
+      verificationCodes.delete(email);
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
@@ -96,10 +216,14 @@ app.post('/api/auth/register', async (req, res) => {
       name,
       email,
       password: hashedPassword,
-      authProvider: 'local'
+      authProvider: 'local',
+      emailVerified: true // Mark as verified since they completed email verification
     });
 
     await newUser.save();
+
+    // Clean up verification code
+    verificationCodes.delete(email);
 
     // Generate JWT token
     const token = jwt.sign(
@@ -115,6 +239,7 @@ app.post('/api/auth/register', async (req, res) => {
       email: newUser.email,
       role: newUser.role,
       authProvider: newUser.authProvider,
+      emailVerified: newUser.emailVerified,
       createdAt: newUser.createdAt
     };
 
@@ -129,6 +254,16 @@ app.post('/api/auth/register', async (req, res) => {
     res.status(500).json({ message: 'Internal server error' });
   }
 });
+
+// Clean up expired verification codes (run every 5 minutes)
+setInterval(() => {
+  const now = Date.now();
+  for (const [email, verification] of verificationCodes.entries()) {
+    if (now > verification.expiresAt) {
+      verificationCodes.delete(email);
+    }
+  }
+}, 5 * 60 * 1000); // 5 minutes
 
 // Normal Login
 app.post('/api/auth/login', async (req, res) => {
@@ -317,46 +452,46 @@ app.post('/api/auth/google-login', async (req, res) => {
   }
 });
 
-// Update user role
-app.put('/api/auth/update-role', authenticateToken, async (req, res) => {
-  try {
-    const { role } = req.body;
-    const userId = req.user.userId;
+// // Update user role
+// app.put('/api/auth/update-role', authenticateToken, async (req, res) => {
+//   try {
+//     const { role } = req.body;
+//     const userId = req.user.userId;
 
-    // Validate role
-    if (!['user', 'contributor'].includes(role)) {
-      return res.status(400).json({ message: 'Invalid role' });
-    }
+//     // Validate role
+//     if (!['user', 'contributor'].includes(role)) {
+//       return res.status(400).json({ message: 'Invalid role' });
+//     }
 
-    // Update user role
-    const user = await User.findByIdAndUpdate(
-      userId,
-      { role },
-      { new: true }
-    ).select('-password');
+//     // Update user role
+//     const user = await User.findByIdAndUpdate(
+//       userId,
+//       { role },
+//       { new: true }
+//     ).select('-password');
 
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
+//     if (!user) {
+//       return res.status(404).json({ message: 'User not found' });
+//     }
 
-    res.json({
-      message: 'Role updated successfully',
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        profilePicture: user.profilePicture,
-        authProvider: user.authProvider,
-        createdAt: user.createdAt
-      }
-    });
+//     res.json({
+//       message: 'Role updated successfully',
+//       user: {
+//         _id: user._id,
+//         name: user.name,
+//         email: user.email,
+//         role: user.role,
+//         profilePicture: user.profilePicture,
+//         authProvider: user.authProvider,
+//         createdAt: user.createdAt
+//       }
+//     });
 
-  } catch (error) {
-    console.error('Role update error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
+//   } catch (error) {
+//     console.error('Role update error:', error);
+//     res.status(500).json({ message: 'Internal server error' });
+//   }
+// });
 
 // Get user profile
 app.get('/api/auth/profile', authenticateToken, async (req, res) => {
@@ -396,6 +531,10 @@ app.use((err, req, res, next) => {
 app.use((req, res) => {
   res.status(404).json({ message: 'API endpoint not found' });
 });
+
+
+ 
+ 
 
 app.listen(PORT, () => {
   console.log(`Sthaniya server running on port ${PORT}`);

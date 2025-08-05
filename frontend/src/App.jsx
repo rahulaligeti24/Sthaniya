@@ -1,61 +1,18 @@
-import React, { useState, useEffect } from 'react';
+// App.jsx
+import React, { useContext } from 'react';
+import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
+import { UserContext, UserProvider } from './contexts/UserContext';
+import LanguageSwitcher from './components/LanguageSwitcher';
+
+import Header from './components/Header';
 import Login from './components/Login';
-import RoleSelection from './components/RoleSelection';
 import Register from './components/Register';
-import Dashboard from './components/Dashboard';
+import User from './components/User';
+import Home from './components/Home';
 import './App.css';
 
-function App() {
-  const [currentView, setCurrentView] = useState('login');
-  const [user, setUser] = useState(null);
-  const [isLoading, setIsLoading] = useState(true);
-
-  useEffect(() => {
-    // Check if user is already logged in
-    const token = localStorage.getItem('token');
-    const userData = localStorage.getItem('userData');
-    
-    if (token && userData) {
-      setUser(JSON.parse(userData));
-      if (JSON.parse(userData).role) {
-        setCurrentView('dashboard');
-      } else {
-        setCurrentView('roleSelection');
-      }
-    }
-    setIsLoading(false);
-  }, []);
-
-  const handleLogin = (userData) => {
-    setUser(userData);
-    if (userData.role) {
-      setCurrentView('dashboard');
-    } else {
-      setCurrentView('roleSelection');
-    }
-  };
-
-  const handleRegistration = (userData) => {
-    setUser(userData);
-    setCurrentView('roleSelection');
-  };
-
-  const handleRoleSelection = (role) => {
-    const updatedUser = { ...user, role };
-    setUser(updatedUser);
-    localStorage.setItem('userData', JSON.stringify(updatedUser));
-    setCurrentView('dashboard');
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem('token');
-    localStorage.removeItem('userData');
-    setUser(null);
-    setCurrentView('login');
-  };
-
-  const switchToRegister = () => setCurrentView('registration');
-  const switchToLogin = () => setCurrentView('login');
+function AppContent() {
+  const { user, handleUserLogin, isLoading } = useContext(UserContext);
 
   if (isLoading) {
     return (
@@ -67,44 +24,47 @@ function App() {
   }
 
   return (
+    <> 
+    <LanguageSwitcher />
     <div className="App">
-      <header className="app-header">
-        <h1>Sthaniya</h1>
-        {user && (
-          <div className="user-info">
-            <span>Welcome, {user.name || user.email}</span>
-            <button onClick={handleLogout} className="logout-btn">Logout</button>
-          </div>
-        )}
-      </header>
-
+      <Header user={user} />
       <main className="app-main">
-        {currentView === 'login' && (
-          <Login 
-            onLogin={handleLogin} 
-            onSwitchToRegister={switchToRegister}
+        <Routes>
+          <Route 
+            path="/" 
+            element={user ? <Navigate to="/dashboard" /> : <Home />} 
           />
-        )}
-        
-        {currentView === 'registration' && (
-          <Register
-            onRegister={handleRegistration}
-            onSwitchToLogin={switchToLogin}
+          <Route 
+            path="/login" 
+            element={user ? <Navigate to="/dashboard" /> : <Login onLogin={handleUserLogin} />} 
           />
-        )}
-        
-        {currentView === 'roleSelection' && (
-          <RoleSelection 
-            user={user}
-            onRoleSelect={handleRoleSelection}
+          <Route 
+            path="/register" 
+            element={user ? <Navigate to="/dashboard" /> : <Register onRegister={handleUserLogin} />} 
           />
-        )}
-        
-        {currentView === 'dashboard' && (
-          <Dashboard user={user} />
-        )}
+          <Route 
+            path="/dashboard" 
+            element={user ? <User user={user} /> : <Navigate to="/login" />} 
+          />
+          <Route 
+            path="*" 
+            element={<Navigate to={user ? "/dashboard" : "/"} />} 
+          />
+        </Routes>
       </main>
     </div>
+
+  </>
+  )
+}
+
+function App() {
+  return (
+    <UserProvider>
+      <Router>
+        <AppContent />
+      </Router>
+    </UserProvider>
   );
 }
 
