@@ -49,7 +49,7 @@ const Header = () => {
             <button className="signup-btn" onClick={handleSignup}>
               Sign Up
             </button>
-            <div id="google_translate_element"></div>
+            {/* <div id="google_translate_element"></div> */}
 
           </div>
         )}

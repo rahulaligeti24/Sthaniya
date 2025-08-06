@@ -1,145 +1,171 @@
 const express = require('express');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+const Upload = require('../models/upload'); // Adjust path as needed
 const router = express.Router();
-const Story = require('../models/story');
-const auth = require('../middleware/auth');
 
-// CREATE a new story
-router.post('/create', auth, async (req, res) => {
+// Ensure uploads directory exists
+const uploadsDir = path.join(__dirname, '..', 'uploads');
+if (!fs.existsSync(uploadsDir)) {
+  fs.mkdirSync(uploadsDir, { recursive: true });
+}
+
+// Configure multer for file uploads
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    cb(null, uploadsDir);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    cb(null, file.fieldname + '-' + uniqueSuffix + path.extname(file.originalname));
+  }
+});
+
+const upload = multer({ 
+  storage: storage,
+  limits: {
+    fileSize: 5 * 1024 * 1024 // 5MB limit
+  },
+  fileFilter: function (req, file, cb) {
+    // Check if file is an image
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  }
+});
+
+// POST route to create a new story with image upload
+router.post('/upload', upload.single('image'), async (req, res) => {
   try {
-    const newStory = new Story({
-      ...req.body,
-      author: req.user._id,
-      authorName: req.user.username || 'Anonymous',
+    const { name, email, description } = req.body;
+
+    // Validate required fields
+    if (!name || !email || !description) {
+      return res.status(400).json({ 
+        message: 'Name, email, and description are required' 
+      });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ 
+        message: 'Image file is required' 
+      });
+    }
+
+    // Create new story
+    const newStory = new Upload({
+      name,
+      email,
+      description,
+      image: req.file.filename
     });
+
     await newStory.save();
-    res.status(201).json({ message: 'Story created successfully', story: newStory });
+
+    res.status(201).json({
+      message: 'Story created successfully!',
+      story: newStory
+    });
+
   } catch (error) {
     console.error('Error creating story:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    
+    // Delete uploaded file if database save fails
+    if (req.file) {
+      fs.unlink(req.file.path, (err) => {
+        if (err) console.error('Error deleting file:', err);
+      });
+    }
+    
+    res.status(500).json({ 
+      message: 'Failed to create story',
+      error: error.message 
+    });
   }
 });
 
-// GET stories created by logged-in user
-router.get('/my/stories', auth, async (req, res) => {
+// GET route to fetch all stories
+router.get('/all', async (req, res) => {
   try {
-    const stories = await Story.find({ author: req.user._id });
-    res.json(stories);
+    const stories = await Upload.find()
+      .sort({ createdAt: -1 }) // Sort by newest first
+      .limit(50); // Limit to 50 stories
+
+    res.status(200).json(stories);
+  } catch (error) {
+    console.error('Error fetching stories:', error);
+    res.status(500).json({ 
+      message: 'Failed to fetch stories',
+      error: error.message 
+    });
+  }
+});
+
+// GET route to fetch stories by email (user's own stories)
+router.get('/my/:email', async (req, res) => {
+  try {
+    const { email } = req.params;
+    
+    const stories = await Upload.find({ email })
+      .sort({ createdAt: -1 });
+
+    res.status(200).json(stories);
   } catch (error) {
     console.error('Error fetching user stories:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    res.status(500).json({ 
+      message: 'Failed to fetch user stories',
+      error: error.message 
+    });
   }
 });
 
-// GET stories created by a specific user
-router.get('/user/:userId', async (req, res) => {
-  try {
-    const stories = await Story.find({ author: req.params.userId });
-    res.json(stories);
-  } catch (error) {
-    console.error('Error fetching user stories:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// GET a specific story by ID
+// GET route to fetch a single story by ID
 router.get('/:id', async (req, res) => {
   try {
-    const story = await Story.findById(req.params.id).populate('author', 'username');
+    const story = await Upload.findById(req.params.id);
+    
     if (!story) {
-      return res.status(404).json({ error: 'Story not found' });
+      return res.status(404).json({ message: 'Story not found' });
     }
-    res.json(story);
+
+    res.status(200).json(story);
   } catch (error) {
     console.error('Error fetching story:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// UPDATE a story by ID
-router.put('/:id', auth, async (req, res) => {
-  try {
-    const updatedStory = await Story.findOneAndUpdate(
-      { _id: req.params.id, author: req.user._id },
-      req.body,
-      { new: true }
-    );
-    if (!updatedStory) {
-      return res.status(404).json({ error: 'Story not found or unauthorized' });
-    }
-    res.json(updatedStory);
-  } catch (error) {
-    console.error('Error updating story:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// DELETE a story by ID
-router.delete('/:id', auth, async (req, res) => {
-  try {
-    const deletedStory = await Story.findOneAndDelete({
-      _id: req.params.id,
-      author: req.user._id
+    res.status(500).json({ 
+      message: 'Failed to fetch story',
+      error: error.message 
     });
-    if (!deletedStory) {
-      return res.status(404).json({ error: 'Story not found or unauthorized' });
+  }
+});
+
+// DELETE route to delete a story
+router.delete('/:id', async (req, res) => {
+  try {
+    const story = await Upload.findById(req.params.id);
+    
+    if (!story) {
+      return res.status(404).json({ message: 'Story not found' });
     }
-    res.json({ message: 'Story deleted successfully' });
+
+    // Delete the image file
+    const imagePath = path.join(uploadsDir, story.image);
+    if (fs.existsSync(imagePath)) {
+      fs.unlinkSync(imagePath);
+    }
+
+    await Upload.findByIdAndDelete(req.params.id);
+
+    res.status(200).json({ message: 'Story deleted successfully' });
   } catch (error) {
     console.error('Error deleting story:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// LIKE a story
-router.post('/:id/like', auth, async (req, res) => {
-  try {
-    const story = await Story.findById(req.params.id);
-    if (!story) return res.status(404).json({ error: 'Story not found' });
-
-    if (!story.likes.includes(req.user._id)) {
-      story.likes.push(req.user._id);
-      await story.save();
-    }
-
-    res.json({ message: 'Story liked successfully' });
-  } catch (error) {
-    console.error('Error liking story:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// ADD a comment to a story
-router.post('/:id/comment', auth, async (req, res) => {
-  try {
-    const story = await Story.findById(req.params.id);
-    if (!story) return res.status(404).json({ error: 'Story not found' });
-
-    const comment = {
-      text: req.body.text,
-      author: req.user._id
-    };
-
-    story.comments.push(comment);
-    await story.save();
-    res.status(201).json({ message: 'Comment added successfully' });
-  } catch (error) {
-    console.error('Error adding comment:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
-  }
-});
-
-// DELETE a comment from a story
-router.delete('/:id/comment/:commentId', auth, async (req, res) => {
-  try {
-    const story = await Story.findById(req.params.id);
-    if (!story) return res.status(404).json({ error: 'Story not found' });
-
-    story.comments = story.comments.filter(comment => comment._id.toString() !== req.params.commentId);
-    await story.save();
-    res.json({ message: 'Comment deleted successfully' });
-  } catch (error) {
-    console.error('Error deleting comment:', error);
-    res.status(500).json({ error: 'Internal Server Error' });
+    res.status(500).json({ 
+      message: 'Failed to delete story',
+      error: error.message 
+    });
   }
 });
 

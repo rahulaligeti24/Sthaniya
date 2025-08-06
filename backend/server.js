@@ -22,7 +22,6 @@ const client = new OAuth2Client(GOOGLE_CLIENT_ID);
 // Middleware
 app.use(cors());
 app.use(express.json());
-
 app.use('/api/stories', StoryRoutes);
 
 // Request validation middleware to catch malformed URLs
@@ -321,7 +320,8 @@ app.post('/api/auth/login', async (req, res) => {
   }
 });
 
-// Google Registration
+
+// Updated Google Registration Route
 app.post('/api/auth/google-register', async (req, res) => {
   try {
     const { token } = req.body;
@@ -347,16 +347,92 @@ app.post('/api/auth/google-register', async (req, res) => {
       return res.status(400).json({ message: 'User already exists with this email' });
     }
 
-    // Create new user
-    const newUser = new User({
-      name,
+    // Generate verification code
+    const code = generateVerificationCode();
+    
+    // Store verification data including Google info
+    verificationCodes.set(email, {
+      code,
+      expiresAt: Date.now() + 10 * 60 * 1000, // 10 minutes
+      attempts: 0,
+      // Store Google data for later use
+      googleData: {
+        name,
+        email,
+        googleId,
+        profilePicture: picture
+      },
+      registrationType: 'google'
+    });
+
+    // Send verification email
+    await sendVerificationCode(email, code);
+
+    res.json({
+      message: 'Verification code sent to your email',
       email,
-      googleId,
-      profilePicture: picture,
-      authProvider: 'google'
+      registrationType: 'google'
+    });
+
+  } catch (error) {
+    console.error('Google registration error:', error);
+    res.status(500).json({ message: 'Google authentication failed' });
+  }
+});
+
+// Updated verification route to handle Google data
+app.post('/api/auth/verify-google-registration', async (req, res) => {
+  try {
+    const { email, verificationCode } = req.body;
+
+    if (!verificationCode) {
+      return res.status(400).json({ message: 'Verification code is required' });
+    }
+
+    // Check verification code
+    const storedVerification = verificationCodes.get(email);
+    
+    if (!storedVerification || storedVerification.registrationType !== 'google') {
+      return res.status(400).json({ message: 'Verification code not found. Please request a new one.' });
+    }
+
+    if (Date.now() > storedVerification.expiresAt) {
+      verificationCodes.delete(email);
+      return res.status(400).json({ message: 'Verification code has expired. Please request a new one.' });
+    }
+
+    if (storedVerification.attempts >= 3) {
+      verificationCodes.delete(email);
+      return res.status(400).json({ message: 'Too many verification attempts. Please request a new code.' });
+    }
+
+    if (storedVerification.code !== verificationCode) {
+      storedVerification.attempts += 1;
+      return res.status(400).json({ message: 'Invalid verification code' });
+    }
+
+    // Check if user already exists (double check)
+    const existingUser = await User.findOne({ email });
+    if (existingUser) {
+      verificationCodes.delete(email);
+      return res.status(400).json({ message: 'User already exists with this email' });
+    }
+
+    // Create user with Google data
+    const { googleData } = storedVerification;
+    const newUser = new User({
+      name: googleData.name,
+      email: googleData.email,
+      googleId: googleData.googleId,
+      profilePicture: googleData.profilePicture,
+      authProvider: 'google',
+      emailVerified: true
     });
 
     await newUser.save();
+
+    // Clean up verification code
+    verificationCodes.delete(email);
 
     // Generate JWT token
     const jwtToken = jwt.sign(
@@ -373,6 +449,7 @@ app.post('/api/auth/google-register', async (req, res) => {
       role: newUser.role,
       profilePicture: newUser.profilePicture,
       authProvider: newUser.authProvider,
+      emailVerified: newUser.emailVerified,
       createdAt: newUser.createdAt
     };
 
@@ -383,12 +460,40 @@ app.post('/api/auth/google-register', async (req, res) => {
     });
 
   } catch (error) {
-    console.error('Google registration error:', error);
-    res.status(500).json({ message: 'Google authentication failed' });
+    console.error('Google verification error:', error);
+    res.status(500).json({ message: 'Internal server error' });
   }
 });
 
-// Google Login
+// Get user profile
+app.get('/api/auth/profile', authenticateToken, async (req, res) => {
+  try {
+    const userId = req.user.userId;
+    const user = await User.findById(userId).select('-password');
+
+    if (!user) {
+      return res.status(404).json({ message: 'User not found' });
+    }
+
+    res.json({
+      user: {
+        _id: user._id,
+        name: user.name,
+        email: user.email,
+        profilePicture: user.profilePicture,
+        authProvider: user.authProvider,
+        createdAt: user.createdAt
+      }
+    });
+
+  } catch (error) {
+    console.error('Profile fetch error:', error);
+    res.status(500).json({ message: 'Internal server error' });
+  }
+});
+
+
+
 app.post('/api/auth/google-login', async (req, res) => {
   try {
     const { token } = req.body;
@@ -403,7 +508,7 @@ app.post('/api/auth/google-login', async (req, res) => {
     const { email, name, picture, sub: googleId } = payload;
 
     // Find existing user
-    let user = await User.findOne({ 
+    const user = await User.findOne({ 
       $or: [
         { email },
         { googleId }
@@ -411,13 +516,15 @@ app.post('/api/auth/google-login', async (req, res) => {
     });
 
     if (!user) {
-      return res.status(400).json({ message: 'No account found. Please register first.' });
+      return res.status(404).json({ 
+        message: 'No account found. Please register first.',
+        shouldRegister: true
+      });
     }
 
-    // Update Google ID if not set (for users who registered with email first)
+    // Update Google info if missing
     if (!user.googleId) {
       user.googleId = googleId;
-      user.authProvider = 'google';
       user.profilePicture = picture;
       await user.save();
     }
@@ -437,11 +544,12 @@ app.post('/api/auth/google-login', async (req, res) => {
       role: user.role,
       profilePicture: user.profilePicture,
       authProvider: user.authProvider,
+      emailVerified: user.emailVerified,
       createdAt: user.createdAt
     };
 
     res.json({
-      message: 'Login successful with Google',
+      message: 'Google login successful',
       token: jwtToken,
       user: userResponse
     });
@@ -451,76 +559,6 @@ app.post('/api/auth/google-login', async (req, res) => {
     res.status(500).json({ message: 'Google authentication failed' });
   }
 });
-
-// // Update user role
-// app.put('/api/auth/update-role', authenticateToken, async (req, res) => {
-//   try {
-//     const { role } = req.body;
-//     const userId = req.user.userId;
-
-//     // Validate role
-//     if (!['user', 'contributor'].includes(role)) {
-//       return res.status(400).json({ message: 'Invalid role' });
-//     }
-
-//     // Update user role
-//     const user = await User.findByIdAndUpdate(
-//       userId,
-//       { role },
-//       { new: true }
-//     ).select('-password');
-
-//     if (!user) {
-//       return res.status(404).json({ message: 'User not found' });
-//     }
-
-//     res.json({
-//       message: 'Role updated successfully',
-//       user: {
-//         _id: user._id,
-//         name: user.name,
-//         email: user.email,
-//         role: user.role,
-//         profilePicture: user.profilePicture,
-//         authProvider: user.authProvider,
-//         createdAt: user.createdAt
-//       }
-//     });
-
-//   } catch (error) {
-//     console.error('Role update error:', error);
-//     res.status(500).json({ message: 'Internal server error' });
-//   }
-// });
-
-// Get user profile
-app.get('/api/auth/profile', authenticateToken, async (req, res) => {
-  try {
-    const userId = req.user.userId;
-    const user = await User.findById(userId).select('-password');
-
-    if (!user) {
-      return res.status(404).json({ message: 'User not found' });
-    }
-
-    res.json({
-      user: {
-        _id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        profilePicture: user.profilePicture,
-        authProvider: user.authProvider,
-        createdAt: user.createdAt
-      }
-    });
-
-  } catch (error) {
-    console.error('Profile fetch error:', error);
-    res.status(500).json({ message: 'Internal server error' });
-  }
-});
-
 // Error handling middleware
 app.use((err, req, res, next) => {
   console.error(err.stack);

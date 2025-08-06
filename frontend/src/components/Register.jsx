@@ -23,6 +23,7 @@ const Register = () => {
   const [resendLoading, setResendLoading] = useState(false);
   const [resendTimer, setResendTimer] = useState(0);
   const [successMessage, setSuccessMessage] = useState('');
+  const [registrationType, setRegistrationType] = useState('email'); // 'email' or 'google'
 
   useEffect(() => {
     const script = document.createElement('script');
@@ -110,10 +111,12 @@ const Register = () => {
       const data = await res.json();
 
       if (res.ok) {
-        localStorage.setItem('token', data.token);
-        localStorage.setItem('userData', JSON.stringify(data.user));
-        handleUserLogin(data.user);
-        navigate('/dashboard');
+        // Set up verification flow for Google
+        setRegistrationType('google');
+        setFormData(prev => ({ ...prev, email: data.email }));
+        setShowVerification(true);
+        setResendTimer(60);
+        setSuccessMessage('Verification code sent to your Google email!');
       } else {
         setError(data.message || 'Google registration failed');
       }
@@ -164,6 +167,7 @@ const Register = () => {
 
     try {
       await sendVerificationCode(formData.email);
+      setRegistrationType('email');
       setShowVerification(true);
       setResendTimer(60);
       setSuccessMessage('Verification code sent to your email!');
@@ -191,28 +195,40 @@ const Register = () => {
     setError('');
 
     try {
-      const response = await fetch('http://localhost:5000/api/auth/register', {
+      const endpoint = registrationType === 'google' 
+        ? 'http://localhost:5000/api/auth/verify-google-registration'
+        : 'http://localhost:5000/api/auth/register';
+
+      const requestBody = registrationType === 'google'
+        ? { 
+            email: formData.email, 
+            verificationCode: verificationCode 
+          }
+        : {
+            name: formData.name,
+            email: formData.email,
+            password: formData.password,
+            verificationCode: verificationCode
+          };
+
+      const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          name: formData.name,
-          email: formData.email,
-          password: formData.password,
-          verificationCode: verificationCode
-        }),
+        body: JSON.stringify(requestBody),
       });
 
       const data = await response.json();
 
       if (response.ok) {
-        localStorage.setItem('token', data.token);
-        localStorage.setItem('userData', JSON.stringify(data.user));
-        handleUserLogin(data.user);
-        navigate('/dashboard');
+        // For both registration types, redirect to login page
+        setSuccessMessage('Account created successfully! Redirecting to login...');
+        setTimeout(() => {
+          navigate('/login');
+        }, 2000);
       } else {
-        setError(data.message || 'Registration failed');
+        setError(data.message || 'Verification failed');
       }
     } catch (error) {
       setError('Network error. Please try again.');
@@ -228,9 +244,18 @@ const Register = () => {
     setError('');
 
     try {
-      await sendVerificationCode(formData.email);
-      setResendTimer(60);
-      setSuccessMessage('Verification code resent successfully!');
+      if (registrationType === 'google') {
+        // For Google, we need to restart the registration process
+        setError('Please restart the Google registration process to get a new code.');
+        setTimeout(() => {
+          handleBackToForm();
+        }, 3000);
+      } else {
+        // Regular email resend
+        await sendVerificationCode(formData.email);
+        setResendTimer(60);
+        setSuccessMessage('Verification code resent successfully!');
+      }
     } catch (error) {
       setError(error.message || 'Failed to resend verification code');
     } finally {
@@ -244,6 +269,22 @@ const Register = () => {
     setError('');
     setSuccessMessage('');
     setResendTimer(0);
+    setRegistrationType('email');
+    
+    // Clear form data only if it was Google registration
+    if (registrationType === 'google') {
+      setFormData({
+        name: '',
+        email: '',
+        password: '',
+        confirmPassword: ''
+      });
+    }
+    
+    // Re-render Google button after going back
+    setTimeout(() => {
+      renderGoogleButton();
+    }, 100);
   };
 
   // Render Verification UI
@@ -254,6 +295,7 @@ const Register = () => {
           <h2>Verify Your Email</h2>
           <p className="auth-subtitle">
             We've sent a verification code to <strong>{formData.email}</strong>
+            {registrationType === 'google' && <span> (from your Google account)</span>}
           </p>
 
           {error && <div className="error-message">{error}</div>}
@@ -290,13 +332,14 @@ const Register = () => {
               disabled={resendLoading || resendTimer > 0}
               style={{ marginRight: '10px', opacity: (resendLoading || resendTimer > 0) ? 0.6 : 1 }}
             >
-              {resendLoading ? 'Sending...' : resendTimer > 0 ? `Resend in ${resendTimer}s` : 'Resend Code'}
+              {resendLoading ? 'Sending...' : resendTimer > 0 ? `Resend in ${resendTimer}s` : 
+               registrationType === 'google' ? 'Restart Google Registration' : 'Resend Code'}
             </button>
 
             <span style={{ margin: '0 10px' }}>|</span>
 
             <button type="button" className="link-btn" onClick={handleBackToForm}>
-              Change Email
+              {registrationType === 'google' ? 'Try Different Method' : 'Change Email'}
             </button>
           </div>
 

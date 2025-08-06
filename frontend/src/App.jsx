@@ -2,8 +2,6 @@
 import React, { useContext } from 'react';
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom';
 import { UserContext, UserProvider } from './contexts/UserContext';
-import LanguageSwitcher from './components/LanguageSwitcher';
-
 import Header from './components/Header';
 import Login from './components/Login';
 import Register from './components/Register';
@@ -25,7 +23,6 @@ function AppContent() {
 
   return (
     <> 
-    <LanguageSwitcher />
     <div className="App">
       <Header user={user} />
       <main className="app-main">
